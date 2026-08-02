@@ -21,6 +21,15 @@ Then open <http://localhost:3000>. Pass a port (`python3 dev-server.py 4000`) if
 is busy. This is `http.server` plus `Cache-Control: no-store` — without it the browser
 serves stale ES modules after an edit and you end up debugging code that isn't on disk.
 
+## Hosting it
+
+`.github/workflows/pages.yml` publishes `app/` to GitHub Pages on every push to `main`,
+so the site lives at the repository root URL rather than under `/app/`. It needs Pages
+set to deploy from GitHub Actions once: **Settings → Pages → Source → GitHub Actions**.
+
+Any static host works equally well — the reader is plain files with no build step, and
+all its paths are relative, so serving it from a subdirectory is fine.
+
 ## Install on your devices
 
 The app must be served over HTTPS for offline support and installation to work
