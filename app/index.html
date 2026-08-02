@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0e12" />
+    <meta name="description" content="Read PDFs fast with rapid serial visual presentation." />
+    <title>Flash — RSVP PDF Reader</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M13.2 2 4 13.4h5.6L8.9 22 20 10.2h-6.2z" />
+        </svg>
+        <span>Flash</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="btn-library" title="Library" aria-label="Library">
+          <svg viewBox="0 0 24 24"><path d="M4 4h5v16H4zM11 4h4v16h-4zM17.2 4.6l3.3 15.2" /></svg>
+        </button>
+        <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24">
+            <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+            <circle cx="15" cy="7" r="2.2" />
+            <circle cx="9" cy="17" r="2.2" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-theme" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 24 24"><path d="M20 13.6A8.2 8.2 0 1 1 10.4 4a6.6 6.6 0 0 0 9.6 9.6z" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Landing ─────────────────────────────────────────────── -->
+    <main class="stage" id="view-home">
+      <div class="hero">
+        <h1>Read a PDF in a<br /><em>fraction</em> of the time.</h1>
+        <p class="sub">
+          One word at a time, pinned to the spot your eye already looks. No scanning, no
+          backtracking, no losing your place.
+        </p>
+
+        <label class="dropzone" id="dropzone" tabindex="0">
+          <input type="file" id="file-input" accept="application/pdf,.pdf,.txt,text/plain" hidden />
+          <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 16V4M8 8l4-4 4 4M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" />
+          </svg>
+          <strong>Drop a PDF here</strong>
+          <span>or click to browse · .pdf and .txt</span>
+        </label>
+
+        <button class="ghost-link" id="btn-paste">or paste some text instead</button>
+
+        <section class="recents" id="recents" hidden>
+          <h2>Continue reading</h2>
+          <ul id="recents-list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <!-- ── Reader ──────────────────────────────────────────────── -->
+    <main class="stage reader" id="view-reader" hidden>
+      <div class="doc-title" id="doc-title"></div>
+      <button class="section-label" id="section-label" hidden></button>
+
+      <div class="reticle" id="reticle">
+        <div class="guides" aria-hidden="true">
+          <span class="guide top"></span>
+          <span class="guide bottom"></span>
+        </div>
+        <div class="word-anchor" id="word-anchor">
+          <div class="word" id="word"></div>
+        </div>
+      </div>
+
+      <p class="context" id="context" aria-live="off"></p>
+
+      <div class="scrub">
+        <div class="scrub-ticks" id="scrub-ticks" aria-hidden="true"></div>
+        <input type="range" id="scrubber" min="0" max="100" step="any" value="0" aria-label="Position" />
+        <div class="scrub-meta">
+          <span id="meta-left">—</span>
+          <span id="meta-right">—</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="icon-btn lg" id="btn-back-sentence" title="Previous sentence (J)">
+          <svg viewBox="0 0 24 24"><path d="M18.5 5.5v13L9 12zM5.5 5.5v13" /></svg>
+        </button>
+        <button class="icon-btn lg" id="btn-back" title="Back one word (←)">
+          <svg viewBox="0 0 24 24"><path d="M15 5.5v13L5.5 12z" /></svg>
+        </button>
+        <button class="play-btn" id="btn-play" title="Play / pause (Space)">
+          <svg class="ic-play" viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" /></svg>
+          <svg class="ic-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13" /></svg>
+        </button>
+        <button class="icon-btn lg" id="btn-fwd" title="Forward one word (→)">
+          <svg viewBox="0 0 24 24"><path d="M9 5.5v13L18.5 12z" /></svg>
+        </button>
+        <button class="icon-btn lg" id="btn-fwd-sentence" title="Next sentence (K)">
+          <svg viewBox="0 0 24 24"><path d="M5.5 5.5v13L15 12zM18.5 5.5v13" /></svg>
+        </button>
+      </div>
+
+      <div class="speed">
+        <button class="step-btn" id="wpm-down" aria-label="Slower">−</button>
+        <div class="speed-body">
+          <input type="range" id="wpm" min="100" max="1200" step="10" value="350" aria-label="Words per minute" />
+          <div class="speed-label"><strong id="wpm-value">350</strong> wpm</div>
+        </div>
+        <button class="step-btn" id="wpm-up" aria-label="Faster">+</button>
+      </div>
+
+      <button class="ghost-link" id="btn-close-doc">← back to library</button>
+    </main>
+
+    <!-- ── Settings drawer ─────────────────────────────────────── -->
+    <aside class="drawer" id="drawer" hidden>
+      <div class="drawer-head">
+        <h2>Settings</h2>
+        <button class="icon-btn" id="btn-close-drawer" aria-label="Close">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+
+      <div class="field">
+        <label for="set-chunk">Words at a time</label>
+        <div class="segmented" id="set-chunk">
+          <button data-value="1" class="on">1</button><button data-value="2">2</button><button data-value="3">3</button>
+        </div>
+        <small>More words per flash suits familiar material; one word is best for focus.</small>
+      </div>
+
+      <div class="field">
+        <label for="set-font">Typeface</label>
+        <div class="segmented" id="set-font">
+          <button data-value="sans" class="on">Sans</button><button data-value="serif">Serif</button><button data-value="mono">Mono</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="set-size">Word size <span class="val" id="set-size-val">100%</span></label>
+        <input type="range" id="set-size" min="0.6" max="1.8" step="0.05" value="1" />
+      </div>
+
+      <div class="field">
+        <label for="set-pause">Punctuation pauses <span class="val" id="set-pause-val">100%</span></label>
+        <input type="range" id="set-pause" min="0" max="2" step="0.1" value="1" />
+        <small>How much longer to hold on commas, full stops and paragraph ends.</small>
+      </div>
+
+      <div class="field row">
+        <label for="set-context">Show surrounding sentence</label>
+        <input type="checkbox" id="set-context" class="switch" checked />
+      </div>
+
+      <div class="field row">
+        <label for="set-skip-noise">Skip figures, maths &amp; references</label>
+        <input type="checkbox" id="set-skip-noise" class="switch" checked />
+      </div>
+      <small class="field-note">
+        Captions, equations and bibliography entries aren't prose — flashing them word by
+        word rarely helps. Inline citations like [13] are always removed.
+      </small>
+
+      <div class="field row">
+        <label for="set-rewind">Rewind a little on resume</label>
+        <input type="checkbox" id="set-rewind" class="switch" checked />
+      </div>
+      <small class="field-note">Backs up a few words when you unpause, so you re-enter with context.</small>
+
+      <div class="shortcuts">
+        <h3>Keyboard</h3>
+        <dl>
+          <dt>Space</dt><dd>play / pause</dd>
+          <dt>← →</dt><dd>one word</dd>
+          <dt>J K</dt><dd>one sentence</dd>
+          <dt>↑ ↓</dt><dd>speed</dd>
+          <dt>Esc</dt><dd>pause</dd>
+        </dl>
+      </div>
+    </aside>
+
+    <!-- ── Library sheet ───────────────────────────────────────── -->
+    <aside class="drawer left" id="library" hidden>
+      <div class="drawer-head">
+        <h2>Library</h2>
+        <button class="icon-btn" id="btn-close-library" aria-label="Close">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <ul class="lib-list" id="lib-list"></ul>
+      <p class="empty" id="lib-empty">Nothing here yet. Open a PDF to get started.</p>
+    </aside>
+
+    <!-- ── Contents sheet ──────────────────────────────────────── -->
+    <aside class="drawer left" id="toc" hidden>
+      <div class="drawer-head">
+        <h2>Contents</h2>
+        <button class="icon-btn" id="btn-close-toc" aria-label="Close">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <ul class="toc-list" id="toc-list"></ul>
+      <p class="empty" id="toc-empty">No section headings found in this document.</p>
+    </aside>
+
+    <div class="scrim" id="scrim" hidden></div>
+
+    <!-- ── Paste dialog ────────────────────────────────────────── -->
+    <dialog id="paste-dialog">
+      <form method="dialog">
+        <h2>Paste text</h2>
+        <textarea id="paste-text" rows="10" placeholder="Paste anything you want to read…"></textarea>
+        <menu>
+          <button value="cancel" class="btn subtle">Cancel</button>
+          <button value="ok" class="btn primary" id="paste-ok">Read it</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <!-- ── Loading overlay ─────────────────────────────────────── -->
+    <div class="loading" id="loading" hidden>
+      <div class="spinner"><span></span></div>
+      <p id="loading-text">Reading the PDF…</p>
+      <div class="bar"><i id="loading-bar"></i></div>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

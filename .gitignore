@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+
+# Build artefact — regenerate with ./build.sh
+extension/app/
+
+# Local scratch
+flash-app.zip
+app/_test*.pdf
+app/_demo.pdf
+.claude/settings.local.json

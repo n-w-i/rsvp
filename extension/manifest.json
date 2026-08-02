@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Flash — RSVP Reader",
+  "version": "1.0.0",
+  "description": "Read PDFs and selected text fast with rapid serial visual presentation.",
+  "permissions": ["contextMenus", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Read with Flash" },
+  "icons": {
+    "32": "app/icons/favicon-32.png",
+    "192": "app/icons/icon-192.png",
+    "512": "app/icons/icon-512.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
