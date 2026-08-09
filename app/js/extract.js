@@ -4,7 +4,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.mjs', import
 
 // Bump when extraction changes shape, so documents imported under an older version
 // are rebuilt instead of keeping their stale blocks forever.
-export const EXTRACTOR_VERSION = 6;
+export const EXTRACTOR_VERSION = 14;
 
 const LIGATURES = [[/ﬀ/g, 'ff'], [/ﬁ/g, 'fi'], [/ﬂ/g, 'fl'], [/ﬃ/g, 'ffi'], [/ﬄ/g, 'ffl'], [/ﬅ/g, 'st']];
 
@@ -20,22 +20,68 @@ function normalize(s) {
     .replace(/ {2,}/g, ' ');
 }
 
-// Text items arrive in stream order, not visual order. Bucket them into lines by
-// baseline y, then sort top-to-bottom so column-less pages read correctly.
-function itemsToLines(items) {
-  const lines = [];
-  for (const it of items) {
+function toItems(rawItems) {
+  const items = [];
+  for (const it of rawItems) {
     if (!it.str || !it.str.trim()) continue;
     const [a, b, c, , x, y] = it.transform;
     // Rotated runs are sidebars and watermarks (arXiv stamps, "CONFIDENTIAL"), not prose.
     if (Math.abs(b) > Math.abs(a) * 0.05 || Math.abs(c) > Math.abs(a) * 0.05) continue;
-    const size = Math.abs(it.transform[3]) || it.height || 10;
-    const existing = lines.find((l) => Math.abs(l.y - y) <= Math.max(2, size * 0.35));
+    items.push({ x, y, w: it.width || 0, str: it.str, size: Math.abs(it.transform[3]) || it.height || 10 });
+  }
+  return items;
+}
+
+// The gutter of a two-column page is a vertical strip near the middle that no text
+// crosses. Finding it before lines are assembled is essential: bucketing by baseline
+// alone would fuse a left-column line to the right-column line beside it, which reads
+// as two interleaved half-sentences.
+function findGutter(items, pageWidth) {
+  if (!pageWidth || items.length < 40) return null;
+  // Exact coverage, no rounding outwards: a column gutter is only a few points wide,
+  // and inflating each item's footprint by a bin at each end erases it.
+  const BINS = 200;
+  const covered = new Array(BINS).fill(0);
+  for (const it of items) {
+    const from = Math.max(0, Math.floor((it.x / pageWidth) * BINS));
+    const to = Math.min(BINS - 1, Math.floor(((it.x + it.w) / pageWidth) * BINS));
+    for (let i = from; i <= to; i++) covered[i]++;
+  }
+
+  // Longest empty run whose centre sits in the middle of the page.
+  let best = null;
+  let run = null;
+  for (let i = 0; i <= BINS; i++) {
+    if (i < BINS && covered[i] === 0) {
+      run ??= i;
+    } else if (run !== null) {
+      const centre = (run + i) / 2 / BINS;
+      if (centre > 0.35 && centre < 0.65 && (!best || i - run > best.to - best.from)) {
+        best = { from: run, to: i };
+      }
+      run = null;
+    }
+  }
+  if (!best) return null;
+
+  const start = (best.from / BINS) * pageWidth;
+  const end = (best.to / BINS) * pageWidth;
+  // Both sides must carry real text, or this is just a gap inside a figure.
+  const left = items.filter((it) => it.x + it.w <= end).length;
+  const right = items.filter((it) => it.x >= start).length;
+  if (left < items.length * 0.2 || right < items.length * 0.2) return null;
+  return { start, end };
+}
+
+function bucketLines(items) {
+  const lines = [];
+  for (const it of items) {
+    const existing = lines.find((l) => Math.abs(l.y - it.y) <= Math.max(2, it.size * 0.35));
     if (existing) {
-      existing.parts.push({ x, str: it.str, w: it.width });
-      existing.size = Math.max(existing.size, size);
+      existing.parts.push({ x: it.x, str: it.str, w: it.w });
+      existing.size = Math.max(existing.size, it.size);
     } else {
-      lines.push({ y, size, parts: [{ x, str: it.str, w: it.width }] });
+      lines.push({ y: it.y, size: it.size, parts: [{ x: it.x, str: it.str, w: it.w }] });
     }
   }
   for (const l of lines) {
@@ -52,7 +98,35 @@ function itemsToLines(items) {
     l.x = l.parts[0].x;
     l.right = Math.max(...l.parts.map((p) => p.x + (p.w || 0)));
   }
-  return orderPage(lines.filter((l) => l.text));
+  return lines.filter((l) => l.text).sort((a, b) => b.y - a.y);
+}
+
+function pageToLines(rawItems, pageWidth) {
+  const items = toItems(rawItems);
+  const gutter = findGutter(items, pageWidth);
+  if (!gutter) return orderPage(bucketLines(items));
+
+  // Anything crossing the gutter runs full width — a title or a wide figure — and
+  // splits the page into bands that each drain left column first, then right.
+  const spanning = bucketLines(items.filter((it) => it.x < gutter.start && it.x + it.w > gutter.end));
+  const left = bucketLines(items.filter((it) => it.x + it.w <= gutter.end));
+  const right = bucketLines(items.filter((it) => it.x >= gutter.start && it.x + it.w > gutter.end));
+
+  // A real two-column page has substance in both. If it doesn't, the "gutter" was an
+  // accident of layout and splitting on it would scramble a perfectly good page.
+  if (left.length < 3 || right.length < 3) return orderPage(bucketLines(items));
+
+  const out = [];
+  let li = 0;
+  let ri = 0;
+  for (const band of spanning) {
+    while (li < left.length && left[li].y > band.y) out.push(left[li++]);
+    while (ri < right.length && right[ri].y > band.y) out.push(right[ri++]);
+    out.push(band);
+  }
+  while (li < left.length) out.push(left[li++]);
+  while (ri < right.length) out.push(right[ri++]);
+  return out;
 }
 
 // Reading order, not visual order. A two-column page sorted by height alone would
@@ -119,13 +193,25 @@ function median(nums) {
 // nesting level: "3" is level 1, "3.2" level 2, "3.2.1" level 3.
 const NUMBERED_HEADING = /^(\d+(?:\.\d+){0,3})\.?\s+(\p{Lu}\S*)/u;
 
+// Diagrams and data labels also begin with a number — "1 N [SEP] 1 M" from a BERT
+// figure, "0.3 F1 behind fine-tuning" from a results plot. A section heading is
+// numbered from one, and what follows the number reads like a title.
 function looksNumberedHeading(text) {
-  return text.length < 90 && NUMBERED_HEADING.test(text) && !/[.;,]$/.test(text);
+  if (text.length > 90) return false;
+  const match = text.match(NUMBERED_HEADING);
+  if (!match || match[1].startsWith('0')) return false;
+  const rest = text.slice(match[1].length).trim();
+  if (rest.length < 3 || /[[\]{}=<>|]/.test(rest)) return false;
+  // Needs a real word in it — "N 1 M" is a diagram, "SWAG" is a section.
+  if (!/\p{L}{3,}/u.test(rest)) return false;
+  const wordish = (rest.match(/[\p{L} -]/gu) || []).length;
+  return wordish / rest.length > 0.75 && !/[.;,]$/.test(text);
 }
 
 function headingLevel(block, bodySize) {
-  const match = block.text.match(NUMBERED_HEADING);
-  if (match && block.text.length < 90) return match[1].split('.').length;
+  if (looksNumberedHeading(block.text)) {
+    return block.text.match(NUMBERED_HEADING)[1].split('.').length;
+  }
   if (block.size > bodySize * 1.45) return 1;
   return 2;
 }
@@ -146,6 +232,15 @@ function stripCitations(text) {
 const CAPTION =
   /^(figure|fig\.?|table|algorithm|listing|exhibit|chart|scheme|eq\.?|equation)\s*\d+\s*[:.：—–|]/i;
 const BIBLIOGRAPHY = /^(references|bibliography|works cited|literature cited)\b/i;
+// A reference entry announces itself: a bracketed number, a "Surname, I." author, or
+// a year in the citation position. Appendix prose has none of these.
+const REFERENCE_ENTRY =
+  /^\[\d+\]|^\p{Lu}[\p{L}'’-]+,\s*\p{Lu}\.|\b(?:19|20)\d{2}[a-z]?\s*[.),]|\barXiv\b|\bdoi\b/u;
+
+const CONTENTS_HEADING = /^(table of )?contents\b/i;
+// A contents entry ends in the page number it points at, or carries dot leaders on the
+// way there. Leaders can run long, so this deliberately allows a generous length.
+const CONTENTS_ENTRY = /\.{3,}|\s\d{1,3}$/;
 
 const EMAIL = /\S+@\S+\.\S/;
 const FOOTNOTE_MARK = /^[∗*†‡§¶]/;
@@ -156,37 +251,101 @@ const CONTENT_START = /^(abstract|summary|introduction|contents)\b/i;
 function classifyNoise(blocks, bodySize) {
   let inBibliography = false;
 
+  const drop = (b, why) => {
+    b.noise = true;
+    b.why = why;
+  };
+
+  let inContents = false;
+  let missedContents = 0;
+
   for (const b of blocks) {
+    // A table of contents duplicates every heading in the document and reads as a
+    // list of page numbers. Its entries look like headings, so clear that too or they
+    // fill the contents panel with phantom sections.
+    if (inContents) {
+      if (b.text.length < 200 && CONTENTS_ENTRY.test(b.text)) {
+        b.heading = false;
+        drop(b, 'contents');
+        missedContents = 0;
+        continue;
+      }
+      // One odd line shouldn't end the list — a stray artefact mid-contents would
+      // otherwise let every remaining entry through as a phantom section.
+      if (++missedContents >= 2) inContents = false;
+    }
+
     if (b.heading) {
       inBibliography = BIBLIOGRAPHY.test(b.text);
+      if (CONTENTS_HEADING.test(b.text)) {
+        inContents = true;
+        missedContents = 0;
+      }
       continue;
     }
-    if (inBibliography || CAPTION.test(b.text) || EMAIL.test(b.text) || FOOTNOTE_MARK.test(b.text)) {
-      b.noise = true;
-      continue;
+    // Appendices routinely follow the references, and their headings aren't always
+    // detectable — so leave bibliography mode as soon as a block stops looking like
+    // a reference entry, rather than swallowing everything to the end of the document.
+    if (inBibliography) {
+      if (REFERENCE_ENTRY.test(b.text)) {
+        drop(b, 'bibliography');
+        continue;
+      }
+      inBibliography = false;
     }
-
-    // Set smaller than the body: footnotes, credits, conference lines, marginalia.
-    // A 9pt footnote against 10pt body is only 10% down, so the margin has to be tight;
-    // body text is near-uniform, so this rarely catches prose.
-    if (b.size && b.size < bodySize * 0.93) {
-      b.noise = true;
-      continue;
+    if (CAPTION.test(b.text)) drop(b, 'caption');
+    else if (EMAIL.test(b.text)) drop(b, 'email');
+    else if (FOOTNOTE_MARK.test(b.text)) drop(b, 'footnote-mark');
+    // Small type at the foot of the page is a footnote or a credit line. Size alone
+    // is not enough: LaTeX sets abstracts and block quotes small too, and they sit
+    // nowhere near the bottom.
+    else if (b.size && b.size < bodySize * 0.95 && b.foot < 0.18) drop(b, 'footnote');
+    else {
+      // Maths and tabular debris: mostly symbols and digits rather than letters.
+      const letters = (b.text.match(/\p{L}/gu) || []).length;
+      if (b.text.length > 6 && letters / b.text.length < 0.55) drop(b, 'symbols');
     }
-
-    // Maths and tabular debris: mostly symbols and digits rather than letters.
-    const letters = (b.text.match(/\p{L}/gu) || []).length;
-    if (b.text.length > 6 && letters / b.text.length < 0.55) b.noise = true;
   }
 
+  dropContentsEntries(blocks);
   markFrontMatter(blocks);
+}
+
+// Whatever the sequential scan misses, this catches: a contents entry is a heading that
+// says the same thing as a later heading, but trails a page number or dot leaders.
+// Keeping the last occurrence keeps the real section and drops the phantom.
+function dropContentsEntries(blocks) {
+  const norm = (t) =>
+    t
+      .replace(/\.{2,}/g, ' ')
+      .replace(/\s+\d{1,3}$/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+  const headings = blocks.filter((b) => b.heading);
+  const totals = new Map();
+  for (const h of headings) totals.set(norm(h.text), (totals.get(norm(h.text)) || 0) + 1);
+
+  const seen = new Map();
+  for (const h of headings) {
+    const key = norm(h.text);
+    const index = seen.get(key) || 0;
+    seen.set(key, index + 1);
+    const isEarlierDuplicate = totals.get(key) > 1 && index < totals.get(key) - 1;
+    if (isEarlierDuplicate && /\.{2,}|\s\d{1,3}$/.test(h.text)) {
+      h.heading = false;
+      h.noise = true;
+      h.why = 'contents';
+    }
+  }
 }
 
 // The author list, affiliations and email block sit between the title and the abstract.
 // They're the first thing you'd hear on opening a paper and never what you came for.
 function markFrontMatter(blocks) {
   const start = blocks.findIndex(
-    (b) => b.heading && (CONTENT_START.test(b.text) || NUMBERED_HEADING.test(b.text)),
+    (b) => b.heading && (CONTENT_START.test(b.text) || looksNumberedHeading(b.text)),
   );
   if (start < 1 || start > 30) return; // not a paper, or no recognisable front matter
 
@@ -198,7 +357,11 @@ function markFrontMatter(blocks) {
       titleKept = true;
       continue;
     }
+    // Names, affiliations and credits are short. A long paragraph up here is the
+    // abstract of a paper that never labelled it "Abstract", and must survive.
+    if (blocks[i].text.length > 200) continue;
     blocks[i].noise = true;
+    blocks[i].why = 'front-matter';
   }
 }
 
@@ -209,8 +372,14 @@ function demoteFalseHeadings(blocks) {
   for (const b of blocks) {
     if (!b.heading) continue;
     const lastWord = b.text.split(/\s+/).pop() ?? '';
-    // A wrapped line of prose ends mid-sentence; a real heading rarely does.
-    if (/^\p{Ll}/u.test(lastWord) || /[.,;:]$/.test(b.text)) b.heading = false;
+    // Ending on a lowercase word suggests a wrapped line of prose — but only when the
+    // line is long. Plenty of real headings are sentence case ("5 Related work"), and
+    // an earlier version of this rule quietly deleted most of them.
+    const wrappedProse =
+      /^\p{Ll}/u.test(lastWord) && b.text.length > 55 && !looksNumberedHeading(b.text);
+    // An enumerated list item ("1. Inner alignment: when a learned algorithm…") opens
+    // exactly like a numbered heading, then keeps going for a paragraph. Headings don't.
+    if (wrappedProse || /[.,;:]$/.test(b.text) || b.text.length > 120) b.heading = false;
   }
 
   const counts = new Map();
@@ -222,7 +391,7 @@ function demoteFalseHeadings(blocks) {
   let start = -1;
   for (let i = 0; i <= blocks.length; i++) {
     const unnumbered =
-      i < blocks.length && blocks[i].heading && !NUMBERED_HEADING.test(blocks[i].text);
+      i < blocks.length && blocks[i].heading && !looksNumberedHeading(blocks[i].text);
     if (unnumbered) {
       if (start < 0) start = i;
     } else if (start >= 0) {
@@ -235,10 +404,13 @@ function demoteFalseHeadings(blocks) {
 export async function extractPdf(data, onProgress) {
   const doc = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
   const pages = [];
+  const pageHeights = [];
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
-    pages.push(itemsToLines(content.items));
+    const viewport = page.getViewport({ scale: 1 });
+    pages.push(pageToLines(content.items, viewport.width));
+    pageHeights.push(viewport.height);
     page.cleanup();
     onProgress?.(i / doc.numPages);
   }
@@ -252,12 +424,23 @@ export async function extractPdf(data, onProgress) {
   const flush = () => {
     if (!buffer) return;
     const text = buffer.text.replace(/\s+/g, ' ').trim();
-    if (text) blocks.push({ text, page: buffer.page, heading: buffer.heading, size: buffer.size });
+    if (text) {
+      blocks.push({
+        text,
+        page: buffer.page,
+        heading: buffer.heading,
+        size: buffer.size,
+        // Distance of the block's lowest line from the foot of the page, as a
+        // fraction of page height — footnotes sit at the bottom, abstracts don't.
+        foot: buffer.pageHeight ? buffer.bottom / buffer.pageHeight : 1,
+      });
+    }
     buffer = null;
   };
 
   const append = (line) => {
     buffer.size = Math.max(buffer.size, line.size);
+    buffer.bottom = Math.min(buffer.bottom, line.y);
     buffer.right = Math.max(buffer.right, line.right);
     buffer.left = Math.min(buffer.left, line.x);
     buffer.lastRight = line.right;
@@ -312,6 +495,8 @@ export async function extractPdf(data, onProgress) {
           right: line.right,
           lastRight: line.right,
           lastY: line.y,
+          bottom: line.y,
+          pageHeight: pageHeights[pi],
         };
       } else {
         append(line);

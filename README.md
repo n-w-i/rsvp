@@ -109,5 +109,20 @@ Playback is driven by `requestAnimationFrame`, not `setTimeout`: a background or
 occluded tab clamps timers to roughly one second, which would drag every word out to the
 same crawl no matter what speed you set.
 
+### Checking extraction changes
+
+These are heuristics, and every one of them was wrong on some real paper before it was
+right. `./tools/check-extraction.sh` downloads eight papers spanning single-column,
+two-column, small-type abstracts, appendices after references, and a table of contents,
+then installs an audit harness. Open the app and run:
+
+```js
+await import('/_audit.js'); console.table(await __audit(['attention', 'bert', 'resnet']))
+```
+
+It reports, per paper: headings found by level, share of blocks skipped, and — most
+importantly — `droppedProse`, the count of prose-shaped blocks the filters discarded.
+That number should be captions and footnotes only. Anything else is a regression.
+
 Updating pdf.js: `npm i pdfjs-dist@latest`, then copy `build/pdf.min.mjs` and
 `build/pdf.worker.min.mjs` into `app/vendor/` as `pdf.mjs` and `pdf.worker.mjs`.

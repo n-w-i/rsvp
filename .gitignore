@@ -9,3 +9,5 @@ flash-app.zip
 app/_test*.pdf
 app/_demo.pdf
 .claude/settings.local.json
+app/_papers/
+app/_audit.js
