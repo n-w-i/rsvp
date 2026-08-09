@@ -4,7 +4,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdf.worker.mjs', import
 
 // Bump when extraction changes shape, so documents imported under an older version
 // are rebuilt instead of keeping their stale blocks forever.
-export const EXTRACTOR_VERSION = 4;
+export const EXTRACTOR_VERSION = 6;
 
 const LIGATURES = [[/ﬀ/g, 'ff'], [/ﬁ/g, 'fi'], [/ﬂ/g, 'fl'], [/ﬃ/g, 'ffi'], [/ﬄ/g, 'ffl'], [/ﬅ/g, 'st']];
 
@@ -114,6 +114,22 @@ function median(nums) {
   return s[Math.floor(s.length / 2)];
 }
 
+// Subsections are typeset barely larger than body text — sometimes identical — so size
+// alone never finds them. Numbering is the reliable signal, and its depth gives the
+// nesting level: "3" is level 1, "3.2" level 2, "3.2.1" level 3.
+const NUMBERED_HEADING = /^(\d+(?:\.\d+){0,3})\.?\s+(\p{Lu}\S*)/u;
+
+function looksNumberedHeading(text) {
+  return text.length < 90 && NUMBERED_HEADING.test(text) && !/[.;,]$/.test(text);
+}
+
+function headingLevel(block, bodySize) {
+  const match = block.text.match(NUMBERED_HEADING);
+  if (match && block.text.length < 90) return match[1].split('.').length;
+  if (block.size > bodySize * 1.45) return 1;
+  return 2;
+}
+
 // Inline reference markers are pure interruption when read aloud one word at a time:
 // "[13]" costs a full beat and carries nothing. Only numeric forms are stripped —
 // "[sic]" and "[emphasis mine]" are real words and stay.
@@ -131,9 +147,13 @@ const CAPTION =
   /^(figure|fig\.?|table|algorithm|listing|exhibit|chart|scheme|eq\.?|equation)\s*\d+\s*[:.：—–|]/i;
 const BIBLIOGRAPHY = /^(references|bibliography|works cited|literature cited)\b/i;
 
+const EMAIL = /\S+@\S+\.\S/;
+const FOOTNOTE_MARK = /^[∗*†‡§¶]/;
+const CONTENT_START = /^(abstract|summary|introduction|contents)\b/i;
+
 // Blocks that aren't linear prose. Flashing an equation or a bibliography entry word
 // by word is noise, so mark them and let the reader skip them by default.
-function classifyNoise(blocks) {
+function classifyNoise(blocks, bodySize) {
   let inBibliography = false;
 
   for (const b of blocks) {
@@ -141,11 +161,15 @@ function classifyNoise(blocks) {
       inBibliography = BIBLIOGRAPHY.test(b.text);
       continue;
     }
-    if (inBibliography) {
+    if (inBibliography || CAPTION.test(b.text) || EMAIL.test(b.text) || FOOTNOTE_MARK.test(b.text)) {
       b.noise = true;
       continue;
     }
-    if (CAPTION.test(b.text)) {
+
+    // Set smaller than the body: footnotes, credits, conference lines, marginalia.
+    // A 9pt footnote against 10pt body is only 10% down, so the margin has to be tight;
+    // body text is near-uniform, so this rarely catches prose.
+    if (b.size && b.size < bodySize * 0.93) {
       b.noise = true;
       continue;
     }
@@ -153,6 +177,28 @@ function classifyNoise(blocks) {
     // Maths and tabular debris: mostly symbols and digits rather than letters.
     const letters = (b.text.match(/\p{L}/gu) || []).length;
     if (b.text.length > 6 && letters / b.text.length < 0.55) b.noise = true;
+  }
+
+  markFrontMatter(blocks);
+}
+
+// The author list, affiliations and email block sit between the title and the abstract.
+// They're the first thing you'd hear on opening a paper and never what you came for.
+function markFrontMatter(blocks) {
+  const start = blocks.findIndex(
+    (b) => b.heading && (CONTENT_START.test(b.text) || NUMBERED_HEADING.test(b.text)),
+  );
+  if (start < 1 || start > 30) return; // not a paper, or no recognisable front matter
+
+  const titleSize = Math.max(...blocks.slice(0, start).map((b) => b.size || 0));
+  let titleKept = false;
+  for (let i = 0; i < start; i++) {
+    // Keep the title itself — it's the one thing up there worth seeing.
+    if (!titleKept && blocks[i].size === titleSize) {
+      titleKept = true;
+      continue;
+    }
+    blocks[i].noise = true;
   }
 }
 
@@ -171,10 +217,13 @@ function demoteFalseHeadings(blocks) {
   for (const b of blocks) if (b.heading) counts.set(b.text, (counts.get(b.text) || 0) + 1);
   for (const b of blocks) if (b.heading && counts.get(b.text) >= 3) b.heading = false;
 
-  // Three or more in a row is a title page or a banner, not a run of sections.
+  // Three or more in a row is a title page or a banner, not a run of sections —
+  // except when they're numbered, since "3.2" followed straight by "3.2.1" is normal.
   let start = -1;
   for (let i = 0; i <= blocks.length; i++) {
-    if (i < blocks.length && blocks[i].heading) {
+    const unnumbered =
+      i < blocks.length && blocks[i].heading && !NUMBERED_HEADING.test(blocks[i].text);
+    if (unnumbered) {
       if (start < 0) start = i;
     } else if (start >= 0) {
       if (i - start >= 3) for (let j = start; j < i; j++) blocks[j].heading = false;
@@ -237,7 +286,8 @@ export async function extractPdf(data, onProgress) {
       if (repeats.has(line.text.replace(/\d+/g, '#'))) return;
       if (/^\d{1,4}$/.test(line.text)) return; // bare page number
 
-      const isHeading = line.size > bodySize * 1.18 && line.text.length < 120;
+      const isHeading =
+        (line.size > bodySize * 1.18 && line.text.length < 120) || looksNumberedHeading(line.text);
       let startsNew = !buffer || isHeading || buffer.heading;
 
       if (!startsNew) {
@@ -272,7 +322,8 @@ export async function extractPdf(data, onProgress) {
   flush();
 
   demoteFalseHeadings(blocks);
-  classifyNoise(blocks);
+  for (const b of blocks) if (b.heading) b.level = headingLevel(b, bodySize);
+  classifyNoise(blocks, bodySize);
   for (const b of blocks) if (!b.noise) b.text = stripCitations(b.text);
 
   const firstPage = blocks.filter((b) => b.page === 1 && b.text.length > 6 && b.text.length < 200);

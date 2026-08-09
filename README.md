@@ -87,8 +87,13 @@ runs, not paragraphs. `app/js/extract.js` handles:
 - rejoining words hyphenated across a line break
 - dropping running heads, page numbers, and rotated watermarks
 - carrying a paragraph across a page break when it clearly continues
-- identifying section headings by type size, then demoting the false positives —
-  banners set in large type, and figure labels that repeat across pages
+- identifying section headings by type size *and* by numbering — subsections are often
+  set at body size, so `3.2.1 Scaled Dot-Product Attention` is only findable from its
+  number, whose depth also gives the nesting level shown in the contents panel
+- demoting false headings: banners set in large type, figure labels that repeat across
+  pages, and anything that reads as a wrapped line of prose
+- dropping front matter — the author list, affiliations, emails and footnotes between
+  the title and the abstract, plus anything set smaller than the body text
 
 - stripping inline citation markers (`[13]`, `[1, 2]`) from prose, since each one costs
   a full beat and carries nothing — `[sic]` and other worded brackets are left alone

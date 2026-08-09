@@ -116,7 +116,7 @@ function renderContext(index) {
 function buildSections(tokens) {
   sections = [];
   tokens.forEach((t, i) => {
-    if (t.heading) sections.push({ index: i, title: t.text });
+    if (t.heading) sections.push({ index: i, title: t.text, level: t.level ?? 1 });
   });
 
   const last = tokens.length - 1 || 1;
@@ -137,6 +137,7 @@ function renderToc() {
       const li = document.createElement('li');
       const row = document.createElement('button');
       row.className = 'toc-row';
+      row.dataset.level = Math.min(section.level, 3);
       row.classList.toggle('current', section === current);
 
       const title = document.createElement('span');

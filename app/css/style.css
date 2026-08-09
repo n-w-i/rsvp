@@ -669,6 +669,22 @@ body.playing .play-btn .ic-pause {
   transition: background 0.18s, color 0.18s;
 }
 
+.toc-row[data-level='1'] {
+  color: var(--text);
+  font-weight: 580;
+}
+
+.toc-row[data-level='2'] {
+  padding-left: 26px;
+  font-size: 13.5px;
+}
+
+.toc-row[data-level='3'] {
+  padding-left: 42px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
 .toc-row:hover {
   background: var(--surface);
   color: var(--text);

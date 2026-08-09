@@ -49,6 +49,7 @@ export function tokenize(blocks, { chunkSize = 1, skipNoise = true } = {}) {
         block: bi,
         page: block.page,
         heading: true,
+        level: block.level ?? 1,
         blockEnd: true,
         wordCount: words.length,
       });
